@@ -9,6 +9,14 @@
    (find (lambda (child) (equal? id (ly:context-id child)))
          (ly:context-children parent)))
 
+#(define (find-twin ctx)
+   (let ((dad (ly:context-parent ctx))
+         (id (ly:context-id ctx)))
+     (find (lambda (child) 
+             (and (equal? id (ly:context-id child))
+                  (not (eq? child ctx))))
+           (ly:context-children dad))))
+
 keepAliveVoices =
 #(define-music-function (voice-ids music) ((list? '("" "1" "2")) ly:music?)
    (let ((skips (skip-of-length music)))
@@ -22,7 +30,6 @@ keepAliveBasicVoices =
    #{
      <<
        #music
-       \context Voice { #skips }
        \context Voice ="1" \with { \voiceOne } { #skips }
        \context Voice = "2" \with { \voiceTwo } { #skips }
      >>
@@ -47,9 +54,6 @@ keepAliveBasicVoices =
          (ly:add-listener (lambda (event)
                             (let ((ev-copy (ly:event-deep-copy event)))
                               (ly:event-set-property! ev-copy 'relay id)
-;                               (ly:message "Relay via ~a at ~a"
-;                                           (ly:context-current-moment ctx)
-;                                           ev-copy)
                               (ly:broadcast relay ev-copy)))
                           source
                           'music-event)
@@ -90,6 +94,7 @@ keepAliveBasicVoices =
               (relay-alist (ly:context-property dad 'collaParteDispatchers))
               (has-relay (assoc-get id relay-alist)))
          (when has-relay
+           (ly:message "Disconnecting ~a" id)
            (ly:disconnect-dispatchers source has-relay))))
               
      
@@ -101,21 +106,32 @@ keepAliveBasicVoices =
        (when (ly:moment? disconnect-until)
          (unless (ly:moment<? (ly:context-current-moment ctx)
                               disconnect-until)
-           (set! disconnect-until #f)
-           (connect ctx)
-           (for-each connect (ly:context-children ctx)))))
+;            (connect ctx)
+;            (for-each connect (ly:context-children ctx))
+           (set! disconnect-until #f))))
       
       (listeners
        ((AnnounceNewContext engraver event)
-        (unless disconnect-until
-          (let ((baby (ly:event-property event 'context)))
-            (connect baby))))
+        (let* ((baby (ly:event-property event 'context))
+               (twin (find-twin baby)))
+          (if twin
+             (let ((baby-source (ly:context-event-source baby))
+                   (twin-source (ly:context-event-source twin)))
+                (ly:add-listener (lambda (event)
+                                    (unless (ly:event-property event 'relay #f)
+                                      (let ((ev-copy (ly:event-deep-copy event)))
+                                        (ly:event-set-property! event 'relay #t)
+                                        (ly:broadcast twin-source ev-copy))))
+                            baby-source
+                            'music-event))
+            (unless disconnect-until
+              (connect baby)))))
        
        ((rhythmic-event engraver event)
         (unless (or (ly:event-property event 'relay #f)
                     (ly:in-event-class? event 'skip-event))
-          (disconnect ctx)
-          (for-each disconnect (ly:context-children ctx))
+;           (disconnect ctx)
+;           (for-each disconnect (ly:context-children ctx))
           (let ((len (ly:event-length event))
                 (now (ly:context-current-moment ctx)))
             (set! disconnect-until (ly:moment-add len now))))))
@@ -129,9 +145,8 @@ keepAliveBasicVoices =
               (set! kill-list (cons grob kill-list)))))))
       
       ((process-acknowledged engraver)
-       (when disconnect-until
-         (for-each ly:grob-suicide! kill-list)
-         (set! kill-list '())))
+       (for-each ly:grob-suicide! kill-list)
+       (set! kill-list '()))
       
       )))
 
@@ -173,12 +188,12 @@ music = \relative {
       g1
     }
   >>
-  f'1(
-  g)
+  f'1(\< <>\!
+  g2 a)
 }
 
 global = {
-  s1*14
+  s1*15
 }
 
 \new StaffGroup <<
@@ -187,8 +202,8 @@ global = {
   } << \global \music >>
   \new Staff  = "foo" \with {
     \consists #Colla_parte_engraver
-  } {
+  } <<
     \keepAliveBasicVoices \global
-    e'1
-  }
+    { s1*14 e'2 d' }
+  >>
 >>
