@@ -1,4 +1,4 @@
-\version "2.25.10"
+\version "2.25.18"
 
 #(use-modules (srfi srfi-2)
               (srfi srfi-26))
@@ -39,15 +39,14 @@ keepAliveBasicVoices =
      
      (define (listen-and-relay source-ctx)
        (let* ((source (ly:context-event-source source-ctx))
-              (dad (ly:context-parent ctx))
               (id (voice-id-or-staff source-ctx))
+              (dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers))
               (has-relay (assoc-get id relay-alist))
               (relay (or has-relay (ly:make-dispatcher))))
-         (ly:message "Relaying ~a" id)
          (ly:add-listener (lambda (event)
-                            (ly:broadcast relay event))
-                                       ;  (ly:event-deep-copy event)))
+                            (ly:broadcast relay
+                                         (ly:event-deep-copy event)))
                           source
                           'music-event)
          ; not checking if duplicate context ids are spawned!
@@ -68,13 +67,13 @@ keepAliveBasicVoices =
    (let ()
      
      (define (connect c)
-       (let* ((dad (ly:context-parent ctx))
+       (let* ((source (ly:context-event-source c))
               (id (voice-id-or-staff c))
+              (dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers))
               (has-relay (assoc-get id relay-alist))
-              (relay (or has-relay (ly:make-dispatcher)))
-              (my-source (ly:context-event-source c)))
-           (ly:connect-dispatchers my-source relay)
+              (relay (or has-relay (ly:make-dispatcher))))
+           (ly:connect-dispatchers source relay)
            (unless has-relay
              (ly:context-set-property! dad 'collaParteDispatchers
                                    (acons id relay relay-alist)))))
@@ -95,7 +94,8 @@ music = \relative {
  %  \new Voice = "4" { g4 4 4 4 }
   \voices 1,2 << 
     {
-      c'4 d e f g a b c
+      \resetRelativeOctave c''
+      c4 d e f g a b c
       d4 c b a g f e d
       c1
     }
@@ -107,7 +107,8 @@ music = \relative {
   c1
   \voices 1,2 << 
     {
-      c'4 d e f g a b c
+      \resetRelativeOctave c'
+      c4 d e f g a b c
       d4 c b a g f e d
       c1
     }
