@@ -45,11 +45,14 @@ keepAliveBasicVoices =
               (has-relay (assoc-get id relay-alist))
               (relay (or has-relay (ly:make-dispatcher))))
          (ly:add-listener (lambda (event)
-                            (ly:broadcast relay
-                                         (ly:event-deep-copy event)))
+                            (let ((ev-copy (ly:event-deep-copy event)))
+                              (ly:event-set-property! ev-copy 'relay id)
+;                               (ly:message "Relay via ~a at ~a"
+;                                           (ly:context-current-moment ctx)
+;                                           ev-copy)
+                              (ly:broadcast relay ev-copy)))
                           source
                           'music-event)
-         ; not checking if duplicate context ids are spawned!
          (unless has-relay
              (ly:context-set-property! dad 'collaParteDispatchers
                                    (acons id relay relay-alist)))))
@@ -61,10 +64,11 @@ keepAliveBasicVoices =
       (listeners
        ((AnnounceNewContext engraver event)
         (let ((baby (ly:event-property event 'context)))
-          (listen-and-relay baby)))))))
+          (when (eq? ctx (ly:context-parent baby))
+            (listen-and-relay baby))))))))
 
 #(define (Colla_parte_engraver ctx)
-   (let ()
+   (let ((disconnect-until #f))
      
      (define (connect c)
        (let* ((source (ly:context-event-source c))
@@ -78,14 +82,43 @@ keepAliveBasicVoices =
              (ly:context-set-property! dad 'collaParteDispatchers
                                    (acons id relay relay-alist)))))
      
+     (define (disconnect c)
+       (let* ((source (ly:context-event-source c))
+              (id (voice-id-or-staff c))
+              (dad (ly:context-parent ctx))
+              (relay-alist (ly:context-property dad 'collaParteDispatchers))
+              (has-relay (assoc-get id relay-alist)))
+         (when has-relay
+           (ly:disconnect-dispatchers source has-relay))))
+              
+     
      (make-engraver
       ((initialize engraver)
        (connect ctx))
       
+      ((start-translation-timestep engraver)
+       (when (ly:moment? disconnect-until)
+         (unless (ly:moment<? (ly:context-current-moment ctx)
+                              disconnect-until)
+           (set! disconnect-until #f)
+           (connect ctx)
+           (for-each connect (ly:context-children ctx)))))
+      
       (listeners
        ((AnnounceNewContext engraver event)
-        (let ((baby (ly:event-property event 'context)))
-          (connect baby)))))))
+        (unless disconnect-until
+          (let ((baby (ly:event-property event 'context)))
+            (connect baby))))
+       
+       ((rhythmic-event engraver event)
+        (unless (or (ly:event-property event 'relay #f)
+                    (ly:in-event-class? event 'skip-event))
+          (disconnect ctx)
+          (for-each disconnect (ly:context-children ctx))
+          (let ((len (ly:event-length event))
+                (now (ly:context-current-moment ctx)))
+            (set! disconnect-until (ly:moment-add len now)))))))))
+
 
 #(set-object-property! 'collaParteDispatchers 'translation-type? list?)
 
@@ -104,7 +137,14 @@ music = \relative {
       g1
     }
   >>
-  c1
+  <<
+    \context Staff = "foo" {
+      c'1
+    }
+    {
+      c,1
+    }
+  >>
   \voices 1,2 << 
     {
       \resetRelativeOctave c'
