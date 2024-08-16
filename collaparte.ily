@@ -68,7 +68,8 @@ keepAliveBasicVoices =
             (listen-and-relay baby))))))))
 
 #(define (Colla_parte_engraver ctx)
-   (let ((disconnect-until #f))
+   (let ((disconnect-until #f)
+         (kill-list '()))
      
      (define (connect c)
        (let* ((source (ly:context-event-source c))
@@ -117,7 +118,22 @@ keepAliveBasicVoices =
           (for-each disconnect (ly:context-children ctx))
           (let ((len (ly:event-length event))
                 (now (ly:context-current-moment ctx)))
-            (set! disconnect-until (ly:moment-add len now)))))))))
+            (set! disconnect-until (ly:moment-add len now))))))
+      
+      (acknowledgers
+       ((grob-interface engraver grob source-engraver)
+        (when disconnect-until
+          (let ((grob-cause (event-cause grob)))
+            (when (and grob-cause
+                       (ly:event-property grob-cause 'relay #f))
+              (set! kill-list (cons grob kill-list)))))))
+      
+      ((process-acknowledged engraver)
+       (when disconnect-until
+         (for-each ly:grob-suicide! kill-list)
+         (set! kill-list '())))
+      
+      )))
 
 
 #(set-object-property! 'collaParteDispatchers 'translation-type? list?)
@@ -138,11 +154,11 @@ music = \relative {
     }
   >>
   <<
-    \context Staff = "foo" {
-      c'1
-    }
     {
       c,1
+    }
+    \context Staff = "foo" {
+      c'1
     }
   >>
   \voices 1,2 << 
@@ -157,10 +173,12 @@ music = \relative {
       g1
     }
   >>
+  f'1(
+  g)
 }
 
 global = {
-  s1*16
+  s1*14
 }
 
 \new StaffGroup <<
@@ -169,5 +187,8 @@ global = {
   } << \global \music >>
   \new Staff  = "foo" \with {
     \consists #Colla_parte_engraver
-  } \keepAliveBasicVoices \global
+  } {
+    \keepAliveBasicVoices \global
+    e'1
+  }
 >>
