@@ -73,7 +73,8 @@ keepAliveBasicVoices =
 
 #(define (Colla_parte_engraver ctx)
    (let ((disconnect-until #f)
-         (kill-list '()))
+         (kill-list '())
+         (evil-twin #f))
      
      (define (connect c)
        (let* ((source (ly:context-event-source c))
@@ -114,38 +115,56 @@ keepAliveBasicVoices =
        ((AnnounceNewContext engraver event)
         (let* ((baby (ly:event-property event 'context))
                (twin (find-twin baby)))
+          (ly:message "~a" (ly:event-property event 'creator))
           (if twin
              (let ((baby-source (ly:context-event-source baby))
                    (twin-source (ly:context-event-source twin)))
-                (ly:add-listener (lambda (event)
-                                    (unless (ly:event-property event 'relay #f)
-                                      (let ((ev-copy (ly:event-deep-copy event)))
-                                        (ly:event-set-property! event 'relay #t)
-                                        (ly:broadcast twin-source ev-copy))))
-                            baby-source
-                            'music-event))
+               (set! evil-twin twin)
+                 (ly:add-listener (lambda (event)
+                                     (unless (ly:event-property event 'relay #f)
+                                       (let ((ev-copy (ly:event-deep-copy event)))
+                                         ;(ly:message "~a" ev-copy)
+                                         ; (ly:event-set-property! event 'relay #t)
+                                         (ly:broadcast twin-source ev-copy))))
+                             baby-source
+                             'music-event))
             (unless disconnect-until
               (connect baby)))))
        
        ((rhythmic-event engraver event)
         (unless (or (ly:event-property event 'relay #f)
                     (ly:in-event-class? event 'skip-event))
-;           (disconnect ctx)
-;           (for-each disconnect (ly:context-children ctx))
+;            (disconnect ctx)
+;            (for-each disconnect (ly:context-children ctx))
           (let ((len (ly:event-length event))
                 (now (ly:context-current-moment ctx)))
             (set! disconnect-until (ly:moment-add len now))))))
       
       (acknowledgers
        ((grob-interface engraver grob source-engraver)
+         (when (eq? 'Slur (grob::name grob))
+           (ly:message "~a" (ly:grob-property grob 'relay)))
         (when disconnect-until
           (let ((grob-cause (event-cause grob)))
-            (when (and grob-cause
-                       (ly:event-property grob-cause 'relay #f))
+            (when (or (eq? evil-twin (ly:translator-context source-engraver))
+                      (and grob-cause
+                           (ly:event-property grob-cause 'relay #f)))
               (set! kill-list (cons grob kill-list)))))))
       
+       (end-acknowledgers
+        ((slur-interface engraver grob source-engraver)
+         (ly:message "End ~a ~a" 
+                     (ly:spanner-bound grob RIGHT)
+                     (grob::all-objects grob))))
+      
       ((process-acknowledged engraver)
-       (for-each ly:grob-suicide! kill-list)
+       (ly:message "~a ~a" 
+                   (ly:context-current-moment ctx)
+                   kill-list)
+       (for-each (lambda (g)
+                   (when (ly:grob-property-data g 'stencil)
+                     (ly:grob-suicide! g)))
+                     kill-list)
        (set! kill-list '()))
       
       )))
@@ -173,13 +192,14 @@ music = \relative {
       c,1
     }
     \context Staff = "foo" {
-      c'1
+      c'2 2
     }
   >>
   \voices 1,2 << 
     {
       \resetRelativeOctave c'
-      c4 d e f g a b c
+      c8 e d f e g f a
+      g b a c b d c e
       d4 c b a g f e d
       c1
     }
@@ -188,8 +208,8 @@ music = \relative {
       g1
     }
   >>
-  f'1(\< <>\!
-  g2 a)
+  f'1(\< 
+  g2 a\f
 }
 
 global = {
@@ -204,6 +224,12 @@ global = {
     \consists #Colla_parte_engraver
   } <<
     \keepAliveBasicVoices \global
-    { s1*14 e'2 d' }
+    { 
+      s1*14
+%       \override Staff.NoteHead.before-line-breaking = #(lambda (g) (ly:message "Foo ~a ~a"
+%                                                                              (ly:grob-object g 'stem)
+%                                                                              (event-cause g)))
+      e'2 d')\f
+    }
   >>
 >>
