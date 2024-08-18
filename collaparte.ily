@@ -19,7 +19,7 @@ keepAliveBasicVoices =
    (let ((skips (skip-of-length music)))
      #{
        <<
-         #music
+         \context Voice = "default" { #music }
          \context Voice ="1" \with { \voiceOne } { #skips }
          \context Voice = "2" \with { \voiceTwo } { #skips }
        >>
@@ -47,23 +47,17 @@ keepAliveBasicVoices =
                     'StreamEvent))
 
 #(define (voice-id-or-staff c)
-   (if (eq? c (ly:context-find c 'Staff))
-       "Staff"
-       (ly:context-id c)))
-
-#(define (canonical-relay canonical)
-   (let ((canonical-source (ly:context-event-source canonical)))
-     (lambda (event)
-       (unless (ly:event-property event 'relay #f)
-         (let ((ev-copy (ly:event-deep-copy event)))
-           (ly:broadcast canonical-source ev-copy))))))
+   (cond
+    ((eq? c (ly:context-find c 'Staff)) "Staff")
+    ((equal? "" (ly:context-id c)) "default")
+    (else (ly:context-id c))))
 
 #(define (Colla_parte_source_engraver ctx)
    (let ()
 
-     (define (listen-and-relay source-ctx)
-       (let* ((source (ly:context-event-source source-ctx))
-              (id (voice-id-or-staff source-ctx))
+     (define (listen-and-relay c)
+       (let* ((source (ly:context-event-source c))
+              (id (voice-id-or-staff c))
               (dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers))
               (has-relay (assoc-get id relay-alist))
@@ -88,11 +82,9 @@ keepAliveBasicVoices =
           (when (eq? ctx (ly:context-parent baby))
             (listen-and-relay baby))))))))
 
-
 #(define (Colla_parte_engraver ctx)
    (let ((disconnect-until #f)
-         (kill-list '())
-         (canonical-voices '()))
+         (default-dispatcher #f))
 
      (define (connect c)
        (let* ((source (ly:context-event-source c))
@@ -106,14 +98,9 @@ keepAliveBasicVoices =
            (ly:context-set-property! dad 'collaParteDispatchers
                                      (acons id relay relay-alist)))))
 
-     (define (find-canonical ctx)
-       (let ((id (ly:context-id ctx)))
-         (find (lambda (child)
-                 (equal? id (ly:context-id child)))
-               canonical-voices)))
-
      (make-engraver
       ((initialize engraver)
+       (set! default-dispatcher (ly:make-dispatcher))
        (connect ctx))
 
       ((start-translation-timestep engraver)
@@ -125,41 +112,37 @@ keepAliveBasicVoices =
       (listeners
        ((AnnounceNewContext engraver event)
         (let* ((baby (ly:event-property event 'context))
-               (canonical (find-canonical baby)))
-          (if canonical
-              (ly:add-listener (canonical-relay canonical)
+               (id (ly:context-id baby)))
+          (cond
+           ((equal? id "")
+              (ly:add-listener (cut ly:broadcast default-dispatcher <>)
                                (ly:context-event-source baby)
-                               'music-event)
-              (begin
-               (set! canonical-voices (cons baby canonical-voices))
-               (connect baby)))))
+                               'music-event))
+           ((equal? id "default")
+              (ly:connect-dispatchers (ly:context-event-source baby) 
+                                      default-dispatcher)
+              (connect baby))
+           (else
+              (connect baby)))))
 
        ((rhythmic-event engraver event)
-        (unless (or disconnect-until
-                    (ly:event-property event 'relay #f)
+        (unless (or (ly:event-property event 'relay #f)
                     (ly:in-event-class? event 'skip-event))
-          (let ((len (ly:event-length event))
-                (now (ly:context-current-moment ctx)))
-            (set! disconnect-until (ly:moment-add len now))))))
+          (let* ((len (ly:event-length event))
+                 (now (ly:context-current-moment ctx))
+                 (maybe-dc-until (ly:moment-add len now)))
+            (unless (and disconnect-until
+                         (ly:moment<? maybe-dc-until disconnect-until))
+              (set! disconnect-until (ly:moment-add len now)))))))
 
       ((pre-process-music engraver)
        (let* ((dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers)))
          (if disconnect-until
-             (for-each (compose clear cdr) relay-alist))
-         (for-each (compose dump cdr) relay-alist)))
-
-      (acknowledgers
-       ((grob-interface engraver grob source-engraver)
-        (let ((source-ctx (ly:translator-context source-engraver)))
-          (unless (or (eq? source-ctx ctx)
-                      (eq? source-ctx (find-canonical source-ctx)))
-            (set! kill-list (cons grob kill-list))))))
-
-      ((process-acknowledged engraver)
-       (for-each ly:grob-suicide! kill-list)
-       (set! kill-list '())))))
-
+             (for-each (compose clear cdr) relay-alist)
+             (for-each (compose dump cdr) relay-alist))))
+      
+      )))
 
 #(set-object-property! 'collaParteDispatchers 'translation-type? list?)
 
@@ -213,6 +196,7 @@ global = {
   } << \global \music >>
   \new Staff  = "foo" \with {
     \consists #Colla_parte_engraver
+    \defaultchild Devnull
   } <<
     \keepAliveBasicVoices \global
     {
