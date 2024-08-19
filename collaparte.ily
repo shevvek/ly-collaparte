@@ -2,7 +2,6 @@
 
 #(use-modules (srfi srfi-2)
               (srfi srfi-26)
-              (ice-9 receive)
               (oop goops))
 
 #(define-class <delay-dispatcher> ()
@@ -10,12 +9,13 @@
    (out-dispatcher #:init-thunk ly:make-dispatcher #:getter out)
    (event-queue #:init-value '() #:accessor queue))
 
-#(define-method (dump! (d <delay-dispatcher>))
-   (for-each (lambda (ev) (ly:broadcast (out d) ev)) (queue d))
-   (set! (queue d) '()))
-
 #(define-method (clear! (d <delay-dispatcher>))
    (set! (queue d) '()))
+
+#(define-method (dump! (d <delay-dispatcher>))
+   (for-each (lambda (ev) (ly:broadcast (out d) ev)) 
+             (reverse (queue d)))
+   (clear! d))
 
 #(define-method (initialize (d <delay-dispatcher>) initargs)
    (next-method)
