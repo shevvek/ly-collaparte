@@ -115,15 +115,15 @@ keepAliveBasicVoices =
                (id (ly:context-id baby)))
           (cond
            ((equal? id "")
-              (ly:add-listener (cut ly:broadcast default-dispatcher <>)
-                               (ly:context-event-source baby)
-                               'music-event))
+            (ly:add-listener (cut ly:broadcast default-dispatcher <>)
+                             (ly:context-event-source baby)
+                             'music-event))
            ((equal? id "default")
-              (ly:connect-dispatchers (ly:context-event-source baby) 
-                                      default-dispatcher)
-              (connect baby))
+            (ly:connect-dispatchers (ly:context-event-source baby)
+                                    default-dispatcher)
+            (connect baby))
            (else
-              (connect baby)))))
+            (connect baby)))))
 
        ((rhythmic-event translator event)
         (unless (or (ly:event-property event 'relay #f)
@@ -141,34 +141,14 @@ keepAliveBasicVoices =
          (if disconnect-until
              (for-each (compose clear cdr) relay-alist)
              (for-each (compose dump cdr) relay-alist))))
-      
+
       )))
 
 #(set-object-property! 'collaParteDispatchers 'translation-type? alist?)
 % #(set-object-property! 'collaParte 'translation-type? boolean-or-symbol?)
 
-#(define (is-bottom-context? m)
-   (let ((type (ly:music-property m 'context-type)))
-     (or (eq? type 'Bottom)
-         (not (ly:context-def-lookup
-               (ly:output-def-lookup
-                (ly:parser-lookup '$defaultlayout)
-                type) 'accepts #f)))))
+%{
 
-collaParteGroup = 
-#(define-music-function (staves-simul-music) (ly:music?)
-   (define (select-colla-parte role)
-     (lambda (staff)
-       (let ((prop-ops (ly:music-property staff 'property-operations))
-             (role-op (list 'assign 'collaParte role)))
-         (and (member role-op prop-ops)
-              (delete role-op prop-ops)))))
-   
-   (let* ((staves (ly:music-property staves-simul-music 'elements))
-          (source-staves (filter (select-colla-parte 'source) staves)))
-      (ly:message "~a" (map (cut ly:music-property <> 'context-id) source-staves)))   
-   #!
-   
   Make substitutions in 'property-operations:
   - (assign collaParte source) -> (consists Colla_parte_source_engraver)
       run procedure on 'element to find all Voice ids + their property-operations
@@ -180,30 +160,82 @@ collaParteGroup =
       id accumulated with appropriate property-operations
       use defaultchild from output def before substituting Devnull
 
-  !#
-   staves-simul-music)
+%}
 
-listVoices =
-#(define-music-function (m) (ly:music?)
-   (let* ((voices (extract-music m (lambda (el)
-                                    (and (music-is-of-type? el 'context-specification)
-                                         (is-bottom-context? el)))))
-          (ids (map (cut ly:music-property <> 'property-operations) voices)))
-     (ly:message "~a" ids)
-     (ly:message "~a" (eq? 'Bottom 'Voice))
-   m))
+#(define (is-bottom-context? m)
+   (and (music-is-of-type? m 'context-specification)
+        (let ((type (ly:music-property m 'context-type)))
+          (or (eq? type 'Bottom)
+              (not (ly:context-def-lookup
+                    (ly:output-def-lookup
+                     (ly:parser-lookup '$defaultlayout)
+                     type) 'accepts #f))))))
 
+#(define (select-colla-parte role)
+   (lambda (staff)
+     (let ((prop-ops (ly:music-property staff 'property-operations))
+           (role-op (list 'assign 'collaParte role)))
+       (and (member role-op prop-ops)
+            (delete role-op prop-ops)))))
 
-% \displayMusic \voices 1,2 <<
-%   {
-%     c''1
-%   }
-%   \\
-%   {
-%     c'1
-%   }
-% >>
+#(define (accum-bottom-ctxs this-ctx id-ops-alist)
+   (let* ((this-id (ly:music-property this-ctx 'context-id))
+          (this-ops (ly:music-property this-ctx 'property-operations))
+          (same-id (assoc-get this-id id-ops-alist)))
+     (cond
+      ((not same-id) (acons this-id this-ops id-ops-alist))
+      ((equal? same-id this-ops) id-ops-alist)
+      (else (assoc-set! id-ops-alist this-id
+                        (lset-union equal? this-ops same-id))))))
 
+#(define (setup-source-staff staff)
+   (and-let* ((other-ops ((select-colla-parte 'source) staff))
+              (ops-setup (cons `(consists ,Colla_parte_source_translator) other-ops))
+              (staff-music (ly:music-property staff 'element))
+              (bottom-ctxs (extract-music staff-music is-bottom-context?)))
+             (ly:music-set-property! staff 'property-operations ops-setup)
+             bottom-ctxs))
+
+#(define (voice-defaults id-ops-pair)
+   (define (prepend-mods mod-music)
+     (append (ly:get-context-mods (context-mod-from-music mod-music))
+             (cdr id-ops-pair)))
+   (cond
+    ((equal? "1" (car id-ops-pair)) (prepend-mods voiceOne))
+    ((equal? "2" (car id-ops-pair)) (prepend-mods voiceTwo))
+    ((equal? "3" (car id-ops-pair)) (prepend-mods voiceThree))
+    ((equal? "4" (car id-ops-pair)) (prepend-mods voiceFour))
+    (else (cdr id-ops-pair))))
+
+#(define (setup-client-staff staff bottom-info-alist)
+   (and-let* ((other-ops ((select-colla-parte 'client) staff))
+              (ops-setup (cons* `(consists ,Colla_parte_translator)
+                                '(default-child "Devnull")
+                                other-ops))
+              (default-voice (ly:context-def-lookup
+                              (ly:output-def-lookup
+                               (ly:parser-lookup '$defaultlayout)
+                               (ly:music-property staff 'context-type)) 'default-child))
+              (staff-music (ly:music-property staff 'element))
+              (skip-music (skip-of-length staff-music))
+              (keep-alive-voice (lambda (id-ops-pair)
+                                  (context-spec-music skip-music
+                                                      default-voice
+                                                      (car id-ops-pair)
+                                                      (voice-defaults id-ops-pair))))
+              (keep-alive-music (cons
+                                 (context-spec-music staff-music default-voice "default")
+                                 (map keep-alive-voice bottom-info-alist))))
+     (ly:music-set-property! staff 'property-operations ops-setup)
+     (ly:music-set-property! staff 'element (make-simultaneous-music keep-alive-music))))
+
+collaParteGroup =
+#(define-music-function (staves-simul-music) (ly:music?)
+   (let* ((staves (ly:music-property staves-simul-music 'elements))
+          (source-voices (concatenate (filter-map setup-source-staff staves)))
+          (bottom-info (fold accum-bottom-ctxs '() source-voices)))
+     (for-each (cut setup-client-staff <> bottom-info) staves)
+     staves-simul-music))
 
 music = \relative {
   c'4 d e f g a b c
@@ -252,14 +284,11 @@ global = {
 \new StaffGroup \collaParteGroup <<
   \new Staff = "Vln" \with {
     collaParte = #'source
-    \consists #Colla_parte_source_translator
-  } \listVoices << \global \music >>
+  } << \global \music >>
   \new Staff  = "foo" \with {
     collaParte = #'client
-    \consists #Colla_parte_translator
-    \defaultchild Devnull
   } <<
-    \keepAliveBasicVoices \global
+    \global
     {
       s1*14
       e'2 d')\f
