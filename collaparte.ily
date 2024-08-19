@@ -52,7 +52,7 @@ keepAliveBasicVoices =
     ((equal? "" (ly:context-id c)) "default")
     (else (ly:context-id c))))
 
-#(define (Colla_parte_source_engraver ctx)
+#(define (Colla_parte_source_translator ctx)
    (let ()
 
      (define (listen-and-relay c)
@@ -72,17 +72,17 @@ keepAliveBasicVoices =
              (ly:context-set-property! dad 'collaParteDispatchers
                                        (acons id relay relay-alist)))))
 
-     (make-engraver
-      ((initialize engraver)
+     (make-translator
+      ((initialize translator)
        (listen-and-relay ctx))
 
       (listeners
-       ((AnnounceNewContext engraver event)
+       ((AnnounceNewContext translator event)
         (let ((baby (ly:event-property event 'context)))
           (when (eq? ctx (ly:context-parent baby))
             (listen-and-relay baby))))))))
 
-#(define (Colla_parte_engraver ctx)
+#(define (Colla_parte_translator ctx)
    (let ((disconnect-until #f)
          (default-dispatcher #f))
 
@@ -98,19 +98,19 @@ keepAliveBasicVoices =
            (ly:context-set-property! dad 'collaParteDispatchers
                                      (acons id relay relay-alist)))))
 
-     (make-engraver
-      ((initialize engraver)
+     (make-translator
+      ((initialize translator)
        (set! default-dispatcher (ly:make-dispatcher))
        (connect ctx))
 
-      ((start-translation-timestep engraver)
+      ((start-translation-timestep translator)
        (when (ly:moment? disconnect-until)
          (unless (ly:moment<? (ly:context-current-moment ctx)
                               disconnect-until)
            (set! disconnect-until #f))))
 
       (listeners
-       ((AnnounceNewContext engraver event)
+       ((AnnounceNewContext translator event)
         (let* ((baby (ly:event-property event 'context))
                (id (ly:context-id baby)))
           (cond
@@ -125,7 +125,7 @@ keepAliveBasicVoices =
            (else
               (connect baby)))))
 
-       ((rhythmic-event engraver event)
+       ((rhythmic-event translator event)
         (unless (or (ly:event-property event 'relay #f)
                     (ly:in-event-class? event 'skip-event))
           (let* ((len (ly:event-length event))
@@ -135,7 +135,7 @@ keepAliveBasicVoices =
                          (ly:moment<? maybe-dc-until disconnect-until))
               (set! disconnect-until (ly:moment-add len now)))))))
 
-      ((pre-process-music engraver)
+      ((pre-process-music translator)
        (let* ((dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers)))
          (if disconnect-until
@@ -144,7 +144,66 @@ keepAliveBasicVoices =
       
       )))
 
-#(set-object-property! 'collaParteDispatchers 'translation-type? list?)
+#(set-object-property! 'collaParteDispatchers 'translation-type? alist?)
+% #(set-object-property! 'collaParte 'translation-type? boolean-or-symbol?)
+
+#(define (is-bottom-context? m)
+   (let ((type (ly:music-property m 'context-type)))
+     (or (eq? type 'Bottom)
+         (not (ly:context-def-lookup
+               (ly:output-def-lookup
+                (ly:parser-lookup '$defaultlayout)
+                type) 'accepts #f)))))
+
+collaParteGroup = 
+#(define-music-function (staves-simul-music) (ly:music?)
+   (define (select-colla-parte role)
+     (lambda (staff)
+       (let ((prop-ops (ly:music-property staff 'property-operations))
+             (role-op (list 'assign 'collaParte role)))
+         (and (member role-op prop-ops)
+              (delete role-op prop-ops)))))
+   
+   (let* ((staves (ly:music-property staves-simul-music 'elements))
+          (source-staves (filter (select-colla-parte 'source) staves)))
+      (ly:message "~a" (map (cut ly:music-property <> 'context-id) source-staves)))   
+   #!
+   
+  Make substitutions in 'property-operations:
+  - (assign collaParte source) -> (consists Colla_parte_source_engraver)
+      run procedure on 'element to find all Voice ids + their property-operations
+      accumulate them
+
+  - (assign collaParte client) -> (consists Colla_parte_engraver)
+                                  (defaultchild Devnull)
+      run procedure on 'element to wrap music with skips to keep alive every Voice
+      id accumulated with appropriate property-operations
+      use defaultchild from output def before substituting Devnull
+
+  !#
+   staves-simul-music)
+
+listVoices =
+#(define-music-function (m) (ly:music?)
+   (let* ((voices (extract-music m (lambda (el)
+                                    (and (music-is-of-type? el 'context-specification)
+                                         (is-bottom-context? el)))))
+          (ids (map (cut ly:music-property <> 'property-operations) voices)))
+     (ly:message "~a" ids)
+     (ly:message "~a" (eq? 'Bottom 'Voice))
+   m))
+
+
+% \displayMusic \voices 1,2 <<
+%   {
+%     c''1
+%   }
+%   \\
+%   {
+%     c'1
+%   }
+% >>
+
 
 music = \relative {
   c'4 d e f g a b c
@@ -190,12 +249,14 @@ global = {
   s1*15
 }
 
-\new StaffGroup <<
+\new StaffGroup \collaParteGroup <<
   \new Staff = "Vln" \with {
-    \consists #Colla_parte_source_engraver
-  } << \global \music >>
+    collaParte = #'source
+    \consists #Colla_parte_source_translator
+  } \listVoices << \global \music >>
   \new Staff  = "foo" \with {
-    \consists #Colla_parte_engraver
+    collaParte = #'client
+    \consists #Colla_parte_translator
     \defaultchild Devnull
   } <<
     \keepAliveBasicVoices \global
