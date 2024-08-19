@@ -5,37 +5,16 @@
               (ice-9 receive)
               (oop goops))
 
-#(ly:set-option 'debug-eval)
-
-keepAliveVoices =
-#(define-music-function (voice-ids music) ((list? '("" "1" "2")) ly:music?)
-   (let ((skips (skip-of-length music)))
-     (make-simultaneous-music (cons skips
-                                    (map (cut context-spec-music skips 'Voice <>)
-                                         voice-ids)))))
-
-keepAliveBasicVoices =
-#(define-music-function (music) (ly:music?)
-   (let ((skips (skip-of-length music)))
-     #{
-       <<
-         \context Voice = "default" { #music }
-         \context Voice ="1" \with { \voiceOne } { #skips }
-         \context Voice = "2" \with { \voiceTwo } { #skips }
-       >>
-     #}))
-
-
 #(define-class <delay-dispatcher> ()
    (in-dispatcher #:init-thunk ly:make-dispatcher #:getter in)
    (out-dispatcher #:init-thunk ly:make-dispatcher #:getter out)
    (event-queue #:init-value '() #:accessor queue))
 
-#(define-method (dump (d <delay-dispatcher>))
+#(define-method (dump! (d <delay-dispatcher>))
    (for-each (lambda (ev) (ly:broadcast (out d) ev)) (queue d))
    (set! (queue d) '()))
 
-#(define-method (clear (d <delay-dispatcher>))
+#(define-method (clear! (d <delay-dispatcher>))
    (set! (queue d) '()))
 
 #(define-method (initialize (d <delay-dispatcher>) initargs)
@@ -139,13 +118,26 @@ keepAliveBasicVoices =
        (let* ((dad (ly:context-parent ctx))
               (relay-alist (ly:context-property dad 'collaParteDispatchers)))
          (if disconnect-until
-             (for-each (compose clear cdr) relay-alist)
-             (for-each (compose dump cdr) relay-alist))))
+             (for-each (compose clear! cdr) relay-alist)
+             (for-each (compose dump! cdr) relay-alist))))
 
       )))
 
 #(set-object-property! 'collaParteDispatchers 'translation-type? alist?)
 % #(set-object-property! 'collaParte 'translation-type? boolean-or-symbol?)
+
+#(define (colla-parte-grob? grob)
+   (let ((cause (event-cause grob)))
+     (and cause
+          (ly:event-property cause 'relay #f))))
+
+#(define (remove-colla-parte-grobs axis)
+   (and-let* ((items-worth-living (ly:grob-object axis 'items-worth-living #f))
+              (worth-living-list (ly:grob-array->list items-worth-living))
+              (really-worth-living (filter (compose not colla-parte-grob?) 
+                                           worth-living-list)))
+     (ly:grob-set-object! axis 'items-worth-living
+                          (ly:grob-list->grob-array really-worth-living))))
 
 %{
 
@@ -210,6 +202,7 @@ keepAliveBasicVoices =
 #(define (setup-client-staff staff bottom-info-alist)
    (and-let* ((other-ops ((select-colla-parte 'client) staff))
               (ops-setup (cons* `(consists ,Colla_parte_translator)
+                                `(push VerticalAxisGroup ,remove-colla-parte-grobs before-line-breaking)
                                 '(default-child "Devnull")
                                 other-ops))
               (default-voice (ly:context-def-lookup
@@ -287,6 +280,8 @@ global = {
   } << \global \music >>
   \new Staff  = "foo" \with {
     collaParte = #'client
+    \override VerticalAxisGroup.remove-empty = ##t
+    \override VerticalAxisGroup.remove-first = ##t
   } <<
     \global
     {
