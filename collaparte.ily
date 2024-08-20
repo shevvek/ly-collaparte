@@ -1,8 +1,16 @@
 \version "2.25.18"
+% -*- master: tests.ly;
 
 #(use-modules (srfi srfi-2)
               (srfi srfi-26)
               (oop goops))
+
+#(define (boolean-or-alist? x)
+   (or (boolean? x)
+       (alist? x)))
+
+#(set-object-property! 'collaParteRelays 'translation-type? boolean-or-alist?)
+
 
 #(define-class <delay-dispatcher> ()
    (in-dispatcher #:init-thunk ly:make-dispatcher #:getter in)
@@ -27,25 +35,27 @@ the events were received."
                     (in d)
                     'StreamEvent))
 
+
 #(define (voice-id-or-staff c)
-   "Map context ids to alist keys for collaParteDispatchers. Staff contexts map
-to \"Staff\", default Bottom contexts with empty id map to \"default\"."
+   "Map context ids to alist keys for collaParteRelays. Staff contexts map
+to \"Staff\". Bottom contexts with empty id map to \"default\"."
    (cond
     ((eq? c (ly:context-find c 'Staff)) "Staff")
     ((equal? "" (ly:context-id c)) "default")
     (else (ly:context-id c))))
 
 #(define (find-colla-parte-relay ctx)
-   "Search upward for parent of ctx with collaParte property set. If none is found,
-return the Score context."
+   "Search upward for parent of ctx with collaParteRelays property set.
+If none is found, return the Score context."
    (let ((dad (ly:context-parent ctx)))
-     (ly:context-property-where-defined dad 'collaParte (ly:context-find dad 'Score))))
+     (ly:context-property-where-defined dad 'collaParteRelays
+                                        (ly:context-find dad 'Score))))
+
 
 #(define (Colla_parte_source_translator ctx)
    "For this Staff context and any of its child contexts, broadcast a copy of
-every music-event to a <delay-dispatcher> stored in the parent context of this
-Staff. Add the property 'relay = #t to every copied event. Clear the events stored
-in each <delay-dispatcher> in collaParteDispatchers at the end of each timestep."
+every music-event to a dispatcher stored in a parent context of this Staff.
+Add the property 'relay = #t to every copied event."
    (let ((relay-ctx #f))
 
      (define (listen-and-relay c)
@@ -75,13 +85,15 @@ in each <delay-dispatcher> in collaParteDispatchers at the end of each timestep.
           (when (eq? ctx (ly:context-parent baby))
             (listen-and-relay baby))))))))
 
+
 #(define (Colla_parte_translator ctx)
    "Map this Staff context and each of its child contexts to receive events
-from the <delay-dispatcher> with corresponding id stored in the parent context's
-collaParteDispatchers. Wait until pre-process-music to dump events from the
-<delay-dispatchers>. If a rhythmic-event happens within this Staff that wasn't
-relayed via collaParteDispatchers, ignore events from collaParteDispatchers until
-after the duration of the rhythmic-event.
+from a <delay-dispatcher> stored in this context's collaParteRelays. Each
+<delay-dispatcher> receives events from the dispatcher with corresponding id
+stored in a parent context's collaParteRelays. Wait until pre-process-music to
+send events from the <delay-dispatchers>, and only do so if no musical material
+is present belonging to this Staff is happening. At the end of each timestep,
+clear the events queue of each <delay-dispatcher>.
 
 Copy events from all child contexts spawned with empty context-id to the child
 context with id \"default\"."
@@ -92,20 +104,20 @@ context with id \"default\"."
      (define (connect c)
        (let* ((source (ly:context-event-source c))
               (id (voice-id-or-staff c))
-              (relay-alist (ly:context-property relay-ctx 'collaParteRelays))
-              (has-relay (assoc-get id relay-alist))
-              (relay (or has-relay (ly:make-dispatcher)))
-              (delay-alist (ly:context-property ctx 'collaParteDispatchers))
-              (has-delay (assoc-get id delay-alist))
-              (delayer (or has-delay (make <delay-dispatcher>))))
-         (ly:connect-dispatchers (in delayer) relay)
-         (ly:connect-dispatchers source (out delayer))
-         (unless has-relay
+              (group-alist (ly:context-property relay-ctx 'collaParteRelays))
+              (has-group-relay (assoc-get id group-alist))
+              (group-relay (or has-group-relay (ly:make-dispatcher)))
+              (staff-alist (ly:context-property ctx 'collaParteRelays))
+              (has-staff-relay (assoc-get id staff-alist))
+              (staff-relay (or has-staff-relay (make <delay-dispatcher>))))
+         (ly:connect-dispatchers (in staff-relay) group-relay)
+         (ly:connect-dispatchers source (out staff-relay))
+         (unless has-group-relay
            (ly:context-set-property! relay-ctx 'collaParteRelays
-                                     (acons id relay relay-alist)))
-         (unless has-delay
-           (ly:context-set-property! ctx 'collaParteDispatchers
-                                     (acons id delayer delay-alist)))))
+                                     (acons id group-relay group-alist)))
+         (unless has-staff-relay
+           (ly:context-set-property! ctx 'collaParteRelays
+                                     (acons id staff-relay staff-alist)))))
 
      (make-translator
       ((initialize translator)
@@ -147,16 +159,11 @@ context with id \"default\"."
               (set! disconnect-until (ly:moment-add len now)))))))
 
       ((pre-process-music translator)
-       (let ((delay-alist (ly:context-property ctx 'collaParteDispatchers)))
+       (let ((staff-relay-alist (ly:context-property ctx 'collaParteRelays)))
          (unless disconnect-until
-             (for-each (compose dump cdr) delay-alist))
-         (for-each (compose clear! cdr) delay-alist)))
-      
-      )))
+             (for-each (compose dump cdr) staff-relay-alist))
+         (for-each (compose clear! cdr) staff-relay-alist))))))
 
-#(set-object-property! 'collaParteDispatchers 'translation-type? alist?)
-#(set-object-property! 'collaParteRelays 'translation-type? alist?)
-#(set-object-property! 'collaParte 'translation-type? boolean-or-symbol?)
 
 #(define (colla-parte-grob? grob)
    (let ((cause (event-cause grob)))
@@ -164,30 +171,15 @@ context with id \"default\"."
           (ly:event-property cause 'relay #f))))
 
 #(define (remove-colla-parte-grobs axis)
-   "Remove grobs that were relayed from a different Staff by Colla_parte_translator
-from items-worth-living, so that this Staff will be treated as empty unless it has
-musical material of its own."
+   "Remove grobs that were relayed from a different Staff by
+Colla_parte_translator from items-worth-living, so that this Staff will be
+treated as empty unless it has musical material of its own."
    (and-let* ((items-worth-living (ly:grob-object axis 'items-worth-living #f))
               (worth-living-list (ly:grob-array->list items-worth-living))
               (really-worth-living (filter (compose not colla-parte-grob?)
                                            worth-living-list)))
      (ly:grob-set-object! axis 'items-worth-living
                           (ly:grob-list->grob-array really-worth-living))))
-
-%{
-
-  Make substitutions in 'property-operations:
-  - (assign collaParte source) -> (consists Colla_parte_source_engraver)
-      run procedure on 'element to find all Voice ids + their property-operations
-      accumulate them
-
-  - (assign collaParte client) -> (consists Colla_parte_engraver)
-                                  (defaultchild Devnull)
-      run procedure on 'element to wrap music with skips to keep alive every Voice
-      id accumulated with appropriate property-operations
-      use defaultchild from output def before substituting Devnull
-
-%}
 
 #(define (bottom-ctx-symbol? sym)
    (or (eq? sym 'Bottom)
@@ -200,23 +192,18 @@ musical material of its own."
    (and (music-is-of-type? m 'context-specification)
         (bottom-ctx-symbol? (ly:music-property m 'context-type))))
 
-#(define (is-staff-context? m)
-   (and-let* (((music-is-of-type? m 'context-specification))
-              (context-def (ly:output-def-lookup
-                            (ly:parser-lookup '$defaultlayout)
-                            (ly:music-property m 'context-type)))
-              (accepts (ly:context-def-lookup context-def 'accepts #f)))
-     (every bottom-ctx-symbol? accepts)))
+#(define (staff-ctx-symbol? sym)
+   (or (eq? sym 'Staff)
+       (and (member 'Staff
+                    (ly:context-def-lookup
+                     (ly:output-def-lookup
+                      (ly:parser-lookup '$defaultlayout)
+                      sym) 'aliases))
+            (not (bottom-ctx-symbol? sym)))))
 
-#(define (select-colla-parte role)
-   "Return a function that checks for collaParte = role in 'property-operations of
-a context-specced-music. If it finds it, return the 'property-operations list,
-otherwise return #f."
-   (lambda (staff)
-     (let ((prop-ops (ly:music-property staff 'property-operations))
-           (role-op (list 'assign 'collaParte role)))
-       (and (member role-op prop-ops)
-            prop-ops))))
+#(define (is-staff-context? m)
+   (and (music-is-of-type? m 'context-specification)
+        (staff-ctx-symbol? (ly:music-property m 'context-type))))
 
 #(define (accum-bottom-ctxs this-ctx id-ops-alist)
    "Use the 'context-id and 'property-operations of a context-specced-music
@@ -235,18 +222,17 @@ For use with fold."
    "Set up this staff to be the source of colla parte material for its group.
 Parse its music expression to identify the id and mods of every bottom context,
 so that contexts with appropriate ids can be kept alive in the client staves."
-   (and-let* ((other-ops ((select-colla-parte 'source) staff))
+   (and-let* ((ops (ly:music-property staff 'property-operations))
+              ((member '(assign collaParteRelays #t) ops))
               (ops-setup (cons `(consists ,Colla_parte_source_translator)
-                               other-ops))
+                               ops))
               (staff-music (ly:music-property staff 'element))
               (bottom-ctxs (extract-music staff-music is-bottom-context?)))
-             (ly:music-set-property! staff 'property-operations ops-setup)
-             bottom-ctxs))
+     (ly:music-set-property! staff 'property-operations ops-setup)
+     bottom-ctxs))
 
 #(define (voice-defaults id-ops-pair)
-   "Accept an alist entry (context-id . property-ops). If the id is 1, 2, 3, or 4
-prepend \\voiceOne \\voiceTwo \\voiceThree or \\voiceFour to property-ops and
-return just the property-ops list. Otherwise simply return the property-ops list."
+   "Make sure contexts with ids 1,2,3,4 have corresponding voice settings."
    (define (prepend-mods mod-music)
      (append (ly:get-context-mods (context-mod-from-music mod-music))
              (cdr id-ops-pair)))
@@ -258,17 +244,36 @@ return just the property-ops list. Otherwise simply return the property-ops list
     (else (cdr id-ops-pair))))
 
 #(define (setup-client-staff staff bottom-info-alist)
-   "Set up this staff to receive and print musical material from a colla parte source
-staff whenever this staff does not have musical material of its own. Wrap the music
-expression belowing to this staff with skips to keep alive all context ids used by the
-colla parte source."
-   (and-let* ((other-ops ((select-colla-parte 'client) staff))
+   "Set up this staff to receive and print musical material from a colla parte
+source staff whenever this staff does not have musical material of its own.
+Wrap the music expression belonging to this staff with skips to keep alive all
+context ids used by the colla parte source."
+   (and-let* ((ops (ly:music-property staff 'property-operations))
+              ((not (member '(assign collaParteRelays #t) ops)))
+              ((not (member '(assign collaParteRelays #f) ops)))
               (ops-setup (cons* `(consists ,Colla_parte_translator)
+                                ;; Note that the same context prop is used for
+                                ;; the Staff level <delay-dispatcher> alist and
+                                ;; the Group level dispatcher alist. So it needs
+                                ;; to be initialized to '() at Staff level
+                                '(assign collaParteRelays ())
                                 `(push VerticalAxisGroup
                                        ,remove-colla-parte-grobs
                                        before-line-breaking)
+                                ;; we want to send all events from implicitly
+                                ;; created Voices instead to the canonical
+                                ;; "default" Voice so that events belonging to
+                                ;; this staff occur in the same Voice as events
+                                ;; relayed from the colla parte source. setting
+                                ;; default-child to Devnull for contexts that
+                                ;; simply send their events onward to a different
+                                ;; Voice avoids the need to kill grobs and makes
+                                ;; spanner bounds work without warnings
                                 '(default-child "Devnull")
-                                other-ops))
+                                ops))
+              ;; before changing this context's default-child, check what it was
+              ;; and use that context type to explicitly instantiate and keep
+              ;; alive all the Voices with ids collected from source staff music
               (default-voice (ly:context-def-lookup
                               (ly:output-def-lookup
                                (ly:parser-lookup '$defaultlayout)
@@ -281,89 +286,41 @@ colla parte source."
                                                       default-voice
                                                       (car id-ops-pair)
                                                       (voice-defaults id-ops-pair))))
+              ;; the default voice gets the original music expression while the
+              ;; rest get skip, since we want to keep but not duplicate
+              ;; global material such as time signatures and keys
               (keep-alive-music (cons
                                  (context-spec-music staff-music
                                                      default-voice
                                                      "default")
                                  (map keep-alive-voice bottom-info-alist))))
-    (ly:music-set-property! staff 'property-operations ops-setup)
-    (ly:music-set-property! staff 'element
-                           (make-simultaneous-music keep-alive-music))))
+     (ly:music-set-property! staff 'property-operations ops-setup)
+     (ly:music-set-property! staff 'element
+                             (make-simultaneous-music keep-alive-music))))
 
 collaParte =
 #(define-music-function (m) (ly:music?)
+   "Set up these staves to copy the music from a source staff whenever they do
+not have musical material of their own. Copied music will be ignored when
+deciding whether to hide empty staves. The source staff is designated by:
+
+\\with {
+  \\collaParteSource
+}
+
+Staves with collaParteRelays = ##f will be ignored by collaParte setup."
    (let* ((staves (extract-music m is-staff-context?))
           (source-voices (concatenate (filter-map setup-source-staff staves)))
           (bottom-info (fold accum-bottom-ctxs '() source-voices)))
+     (when (music-is-of-type? m 'context-specification)
+       ; collaParte staves look for the first parent where collaParteRelays
+       ; is defined and use that context as the home for relay dispatchers
+       (ly:music-set-property! m 'property-operations
+                               (cons '(assign collaParteRelays ())
+                                     (ly:music-property m 'property-operations))))
      (for-each (cut setup-client-staff <> bottom-info) staves)
      m))
 
-music = \relative {
-  c'4 d e f g a b c
-  %  \new Voice = "4" { g4 4 4 4 }
-  \voices 1,2 <<
-    {
-      \resetRelativeOctave c''
-      c4 d e f g a b c
-      d4 c b a g f e d
-      c1
-    }
-    \\
-    {
-      g1
-    }
-  >>
-  <<
-    {
-      c,1
-    }
-    \context Staff = "foo" {
-      c'2 2
-    }
-  >>
-  \voices 1,2 <<
-    {
-      \resetRelativeOctave c'
-      c8 e d f e g f a
-      g b a c b d c e
-      d4 c b a g f e d
-      c1
-    }
-    \\
-    {
-      g1
-    }
-  >>
-  f'1(\<
-  g2 a)\f
+collaParteSource = \with {
+  collaParteRelays = ##t
 }
-
-global = {
-  s1*15
-}
-
-\collaParte \new StaffGroup = "B" \with {
-  collaParte = #'relay
-} <<
-  <<
-    \new Staff = "Vln" \with {
-    collaParte = #'source
-  } << \global \music >>
-  \new Staff  = "VlnB" \with {
-    collaParte = #'client
-%     \override VerticalAxisGroup.remove-empty = ##t
-%     \override VerticalAxisGroup.remove-first = ##t
-  } \global
-  >>
-  \new StaffGroup = "A" \new Staff  = "foo" \with {
-    collaParte = #'client
-%     \override VerticalAxisGroup.remove-empty = ##t
-%     \override VerticalAxisGroup.remove-first = ##t
-  } <<
-    \global
-    {
-      s1*14
-      e'2 d')\f
-    }
-  >>
->>
