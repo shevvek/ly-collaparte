@@ -225,10 +225,10 @@ treated as empty unless it has musical material of its own."
 
 #(define (bottom-ctx-symbol? sym)
    (or (eq? sym 'Bottom)
-       (not (ly:context-def-lookup
-             (ly:output-def-lookup
-              (ly:parser-lookup '$defaultlayout)
-              sym) 'accepts #f))))
+       (and-let* ((cdef (ly:output-def-lookup
+                         (ly:parser-lookup '$defaultlayout)
+                         sym #f)))
+                 (not (ly:context-def-lookup cdef 'accepts #f)))))
 
 #(define (is-bottom-context? m)
    (and (music-is-of-type? m 'context-specification)
@@ -236,12 +236,12 @@ treated as empty unless it has musical material of its own."
 
 #(define (staff-ctx-symbol? sym)
    (or (eq? sym 'Staff)
-       (and (member 'Staff
-                    (ly:context-def-lookup
-                     (ly:output-def-lookup
-                      (ly:parser-lookup '$defaultlayout)
-                      sym) 'aliases))
-            (not (bottom-ctx-symbol? sym)))))
+       (and-let* ((cdef (ly:output-def-lookup
+                         (ly:parser-lookup '$defaultlayout)
+                         sym #f))
+                  ((member 'Staff
+                          (ly:context-def-lookup cdef 'aliases))))
+         (ly:context-def-lookup cdef 'accepts #f))))
 
 #(define (is-staff-context? m)
    (and (music-is-of-type? m 'context-specification)
