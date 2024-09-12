@@ -274,16 +274,14 @@ so that contexts with appropriate ids can be kept alive in the client staves."
      bottom-ctxs))
 
 #(define (voice-defaults id-ops-pair)
-   "Make sure contexts with ids 1,2,3,4 have corresponding voice settings."
-   (define (prepend-mods mod-music)
-     (append (ly:get-context-mods (context-mod-from-music mod-music))
-             (cdr id-ops-pair)))
-   (cond
-    ((equal? "1" (car id-ops-pair)) (prepend-mods voiceOne))
-    ((equal? "2" (car id-ops-pair)) (prepend-mods voiceTwo))
-    ((equal? "3" (car id-ops-pair)) (prepend-mods voiceThree))
-    ((equal? "4" (car id-ops-pair)) (prepend-mods voiceFour))
-    (else (cdr id-ops-pair))))
+   "Make sure contexts with numerical ids have corresponding voice settings."
+   (let ((id-num (car id-ops-pair)))
+     (if (string? id-num)
+         (cons (ly:get-context-mods
+                (context-mod-from-music
+                 (make-voice-props-set (string->number id-num))))
+               (cdr id-ops-pair))
+         (cdr id-ops-pair))))
 
 #(define (setup-client-staff staff bottom-info-alist)
    "Set up this staff to receive and print musical material from a colla parte
