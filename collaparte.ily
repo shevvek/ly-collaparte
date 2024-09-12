@@ -255,6 +255,8 @@ For use with fold."
           (this-ops (ly:music-property this-ctx 'property-operations))
           (same-id (assoc-get this-id id-ops-alist)))
      (cond
+      ((null? this-id) id-ops-alist)
+      ((equal? "" this-id) id-ops-alist)
       ((not same-id) (acons this-id this-ops id-ops-alist))
       ((equal? same-id this-ops) id-ops-alist)
       (else (assoc-set! id-ops-alist this-id
