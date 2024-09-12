@@ -10,6 +10,39 @@
        (alist? x)))
 
 #(set-object-property! 'collaParteRelays 'translation-type? boolean-or-alist?)
+#(set-object-property! 'collaParteEventClasses 'translation-type? symbol-list?)
+#(set-object-property! 'collaParteExcludeEvents 'translation-type? symbol-list?)
+#(set-object-property! 'collaParteLocalEvents 'translation-type? symbol-list?)
+
+\layout {
+  \context {
+    \Score
+    collaParteEventClasses =
+    #'(Override 
+       Revert
+       music-event)
+    collaParteExcludeEvents =
+    #'(structural-event
+       mark-event
+       time-signature-event
+       key-change-event
+       caesura-event
+       footnote-event
+       partial-event
+       label-event
+       bar-check-event
+       section-label-event
+       ad-hoc-jump-event
+       tempo-change-event
+       spacing-section-event)
+    collaParteLocalEvents =
+    #'(Override 
+       Revert
+       UnsetProperty
+       SetProperty
+       music-event)
+  }
+}
 
 
 #(define-class <delay-dispatcher> ()
@@ -64,12 +97,19 @@ Add the property 'relay = #t to every copied event."
               (relay-alist (ly:context-property relay-ctx 'collaParteRelays))
               (has-relay (assoc-get id relay-alist))
               (relay (or has-relay (ly:make-dispatcher))))
-         (ly:add-listener (lambda (event)
-                            (let ((ev-copy (ly:event-deep-copy event)))
-                              (ly:event-set-property! ev-copy 'relay #t)
-                              (ly:broadcast relay ev-copy)))
-                          source
-                          'music-event)
+         (ly:add-listener
+          (lambda (ev)
+            (and-let* ((allowed-events 
+                        (ly:context-property ctx 'collaParteEventClasses))
+                       ((any (cut ly:in-event-class? ev <>) allowed-events))
+                       (banned-events 
+                        (ly:context-property ctx 'collaParteExcludeEvents))
+                       ((not (any (cut ly:in-event-class? ev <>) banned-events)))
+                       (ev-copy (ly:event-deep-copy ev)))
+              (ly:event-set-property! ev-copy 'relay #t)
+              (ly:broadcast relay ev-copy)))
+          source
+          'StreamEvent)
          (unless has-relay
            (ly:context-set-property! relay-ctx 'collaParteRelays
                                      (acons id relay relay-alist)))))
@@ -94,7 +134,6 @@ stored in a parent context's collaParteRelays. Wait until pre-process-music to
 send events from the <delay-dispatchers>, and only do so if no musical material
 is present belonging to this Staff is happening. At the end of each timestep,
 clear the events queue of each <delay-dispatcher>.
-
 Copy events from all child contexts spawned with empty context-id to the child
 context with id \"default\"."
    (let ((relay-ctx #f)
@@ -138,9 +177,12 @@ context with id \"default\"."
           (when (eq? ctx (ly:context-parent baby))
             (cond
              ((equal? id "")
-              (ly:add-listener (cut ly:broadcast default-dispatcher <>)
+              (ly:add-listener (lambda (ev)
+                                 (when (any (cut ly:in-event-class? ev <>)
+                                            (ly:context-property ctx 'collaParteLocalEvents))
+                                 (ly:broadcast default-dispatcher ev)))
                                (ly:context-event-source baby)
-                               'music-event))
+                               'StreamEvent))
              ((equal? id "default")
               (ly:connect-dispatchers (ly:context-event-source baby)
                                       default-dispatcher)
@@ -303,11 +345,9 @@ collaParte =
    "Set up these staves to copy the music from a source staff whenever they do
 not have musical material of their own. Copied music will be ignored when
 deciding whether to hide empty staves. The source staff is designated by:
-
 \\with {
   \\collaParteSource
 }
-
 Staves with collaParteRelays = ##f will be ignored by collaParte setup."
    (let* ((staves (extract-music m is-staff-context?))
           (source-voices (concatenate (filter-map setup-source-staff staves)))
