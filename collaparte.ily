@@ -87,8 +87,9 @@ If none is found, return the Score context."
 
 #(define (Colla_parte_source_translator ctx)
    "For this Staff context and any of its child contexts, broadcast a copy of
-every music-event to a dispatcher stored in a parent context of this Staff.
-Add the property 'relay = #t to every copied event."
+every event to a dispatcher stored in a parent context of this Staff. Filter
+events based on collaParteEventClasses and collaParteExcludeEvents. Exclusions
+take precedence. Add the property 'relay = #t to every copied event."
    (let ((relay-ctx #f))
 
      (define (listen-and-relay c)
@@ -131,11 +132,13 @@ Add the property 'relay = #t to every copied event."
 from a <delay-dispatcher> stored in this context's collaParteRelays. Each
 <delay-dispatcher> receives events from the dispatcher with corresponding id
 stored in a parent context's collaParteRelays. Wait until pre-process-music to
-send events from the <delay-dispatchers>, and only do so if no musical material
-is present belonging to this Staff is happening. At the end of each timestep,
-clear the events queue of each <delay-dispatcher>.
+send events from the <delay-dispatchers>, and only do so if this Staff has no
+musical material of its own in this timestep. Then clear the events queue of
+each <delay-dispatcher>.
+
 Copy events from all child contexts spawned with empty context-id to the child
-context with id \"default\"."
+context with id \"default\", so that spanners are allowed to have one bound in
+copied music and the other in the music belonging to this Staff."
    (let ((relay-ctx #f)
          (disconnect-until #f)
          (default-dispatcher #f))
@@ -285,7 +288,7 @@ so that contexts with appropriate ids can be kept alive in the client staves."
                (cdr id-ops-pair))
          (cdr id-ops-pair))))
 
-#(define (setup-client-staff staff bottom-info-alist)
+#(define ((setup-client-staff bottom-info-alist) staff)
    "Set up this staff to receive and print musical material from a colla parte
 source staff whenever this staff does not have musical material of its own.
 Wrap the music expression belonging to this staff with skips to keep alive all
@@ -312,6 +315,8 @@ context ids used by the colla parte source."
                                 ;; Voice avoids the need to kill grobs and makes
                                 ;; spanner bounds work without warnings
                                 '(default-child "Devnull")
+                                ;; Put the existing context mods last so user
+                                ;; can overwrite the defaults
                                 ops))
               ;; before changing this context's default-child, check what it was
               ;; and use that context type to explicitly instantiate and keep
@@ -353,12 +358,12 @@ Staves with collaParteRelays = ##f will be ignored by collaParte setup."
           (source-voices (concatenate (filter-map setup-source-staff staves)))
           (bottom-info (fold accum-bottom-ctxs '() source-voices)))
      (when (music-is-of-type? m 'context-specification)
-       ; collaParte staves look for the first parent where collaParteRelays
-       ; is defined and use that context as the home for relay dispatchers
+       ;; collaParte staves look for the first parent where collaParteRelays
+       ;; is defined and use that context as the home for relay dispatchers
        (ly:music-set-property! m 'property-operations
                                (cons '(assign collaParteRelays ())
                                      (ly:music-property m 'property-operations))))
-     (for-each (cut setup-client-staff <> bottom-info) staves)
+     (for-each (setup-client-staff bottom-info) staves)
      m))
 
 collaParteSource = \with {
